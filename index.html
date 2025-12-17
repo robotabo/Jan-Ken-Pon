@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 猜拳大戰</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1a1a2e; /* 深色背景更有電玩感 */
+            color: white;
+            touch-action: manipulation;
+        }
+        
+        /* 霓虹燈效果 */
+        .neon-text {
+            text-shadow: 0 0 5px #fff, 0 0 10px #fff, 0 0 20px #ff00de, 0 0 30px #ff00de, 0 0 40px #ff00de;
+        }
+
+        #webcam-container {
+            position: relative;
+            border-radius: 1rem;
+            overflow: hidden;
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+            background-color: #000;
+        }
+        
+        #webcam-container canvas {
+            width: 100% !important;
+            height: auto !important;
+            transform: scaleX(-1); /* 預設鏡像 */
+        }
+        
+        /* 針對後鏡頭取消鏡像 */
+        .no-flip canvas {
+            transform: scaleX(1) !important;
+        }
+
+        .computer-box {
+            background: linear-gradient(145deg, #16213e, #0f3460);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+
+        .versus-badge {
+            background-color: #e94560;
+            transform: skew(-10deg);
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+        .animate-bounce-custom {
+            animation: bounce 1s infinite;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col items-center justify-start pt-2 px-2 overflow-y-auto">
+
+    <!-- 頂部標題與分數 -->
+    <div class="w-full max-w-lg flex justify-between items-end mb-4 px-2">
+        <div>
+            <h1 class="text-2xl font-black italic text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-yellow-500">
+                AI Jan-Ken-Pon
+            </h1>
+            <p class="text-xs text-gray-400">剪刀石頭布對戰</p>
+        </div>
+        <div class="flex gap-4 text-center">
+            <div>
+                <div class="text-[10px] text-gray-400">YOU</div>
+                <div id="score-player" class="text-2xl font-bold text-green-400">0</div>
+            </div>
+            <div>
+                <div class="text-[10px] text-gray-400">AI</div>
+                <div id="score-computer" class="text-2xl font-bold text-red-400">0</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 遊戲主舞台 -->
+    <div id="game-stage" class="w-full max-w-lg grid grid-cols-2 gap-2 mb-4 hidden">
+        
+        <!-- 左側：玩家鏡頭 -->
+        <div class="flex flex-col gap-2">
+            <div id="webcam-container" class="aspect-square w-full bg-black flex items-center justify-center relative">
+                <div class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+                    <span id="countdown-overlay" class="text-6xl font-black text-white drop-shadow-[0_5px_5px_rgba(0,0,0,0.8)] hidden">3</span>
+                </div>
+                <!-- 預覽標籤 (除錯用/提示用) -->
+                <div class="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-center py-1 z-20">
+                    <span id="player-status" class="text-xs text-white font-mono">等待中...</span>
+                </div>
+            </div>
+            <div class="text-center">
+                <span class="text-sm font-bold text-blue-400">你的出拳</span>
+                <div id="player-move-icon" class="text-4xl h-12">❓</div>
+            </div>
+        </div>
+
+        <!-- 中間 VS (絕對定位) -->
+        <div class="absolute left-1/2 top-[250px] transform -translate-x-1/2 -translate-y-1/2 z-30">
+            <div class="versus-badge text-white font-black text-xl px-2 py-1 shadow-lg border-2 border-white">VS</div>
+        </div>
+
+        <!-- 右側：電腦 -->
+        <div class="flex flex-col gap-2">
+            <div class="aspect-square w-full computer-box rounded-2xl flex items-center justify-center border-4 border-gray-700 relative overflow-hidden">
+                <div id="computer-display" class="text-6xl filter drop-shadow-lg transition-all duration-200">🤖</div>
+            </div>
+            <div class="text-center">
+                <span class="text-sm font-bold text-red-400">電腦出拳</span>
+                <div id="computer-move-text" class="text-xl font-bold h-12 flex items-center justify-center text-gray-300">
+                    隨機
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 訊息顯示區 -->
+    <div id="result-message" class="h-12 flex items-center justify-center mb-4 text-xl font-bold text-yellow-300 hidden">
+        準備開始！
+    </div>
+
+    <!-- 啟動按鈕 -->
+    <div class="w-full max-w-lg px-4">
+        <button id="start-btn" onclick="init()" class="w-full bg-gradient-to-r from-blue-600 to-blue-800 text-white font-bold py-4 rounded-xl shadow-lg border-b-4 border-blue-900 active:border-b-0 active:translate-y-1 transition-all">
+            📸 啟動相機
+        </button>
+
+        <div id="game-controls" class="grid grid-cols-1 gap-3 hidden">
+            <button onclick="playRound()" id="battle-btn" class="w-full bg-gradient-to-r from-pink-600 to-purple-600 text-white font-bold py-4 rounded-xl shadow-[0_0_15px_rgba(236,72,153,0.5)] border-b-4 border-purple-900 active:border-b-0 active:translate-y-1 transition-all text-xl flex items-center justify-center gap-2">
+                <span>🥊</span> 猜拳對決！
+            </button>
+            
+            <button onclick="flipCamera()" class="w-full bg-gray-700 text-gray-300 font-bold py-2 rounded-lg text-sm">
+                🔄 切換前後鏡頭
+            </button>
+        </div>
+    </div>
+
+    <!-- 說明 -->
+    <div class="mt-6 p-4 bg-gray-800 rounded-lg text-xs text-gray-400 max-w-lg w-full">
+        <p class="mb-1 font-bold text-gray-200">💡 玩法說明：</p>
+        <ul class="list-disc pl-4 space-y-1">
+            <li>請確保模型包含類別：<span class="text-yellow-400">Rock, Paper, Scissors, None</span></li>
+            <li>按下「猜拳對決」後會倒數 3 秒。</li>
+            <li>請在倒數結束時對著鏡頭比出你的手勢。</li>
+            <li>電腦會同時隨機出拳，立即判斷勝負！</li>
+        </ul>
+    </div>
+
+    <script type="text/javascript">
+        // --------------------------------------------------------
+        // ★★★ 請在這裡貼上你的 Teachable Machine 模型網址 ★★★
+        const URL = "https://teachablemachine.withgoogle.com/models/CBV-3Armv/"; 
+        // --------------------------------------------------------
+
+        let model, webcam, maxPredictions;
+        let isModelLoaded = false;
+        let isBattling = false; // 是否正在進行對戰倒數
+        let facingMode = "user"; // "user" (前鏡頭) 或 "environment" (後鏡頭)
+
+        // 分數
+        let scorePlayer = 0;
+        let scoreComputer = 0;
+
+        // 拳種定義
+        const MOVES = {
+            ROCK: 'Rock',
+            PAPER: 'Paper',
+            SCISSORS: 'Scissors',
+            NONE: 'None'
+        };
+
+        const ICONS = {
+            'Rock': '✊',
+            'Paper': '🖐️',
+            'Scissors': '✌️',
+            'None': '🤷',
+            'Waiting': '🤖'
+        };
+
+        const TRANSLATION = {
+            'Rock': '石頭',
+            'Paper': '布',
+            'Scissors': '剪刀',
+            'None': '無',
+        };
+
+        // 初始化
+        async function init() {
+            if (URL.includes("YOUR_MODEL_ID")) {
+                Swal.fire({
+                    icon: 'error',
+                    title: '未設定模型',
+                    text: '請修改程式碼，貼上您的 Teachable Machine 模型網址！'
+                });
+                return;
+            }
+
+            const startBtn = document.getElementById("start-btn");
+            startBtn.innerHTML = "載入模型中...";
+            startBtn.disabled = true;
+
+            try {
+                const modelURL = URL + "model.json";
+                const metadataURL = URL + "metadata.json";
+
+                model = await tmImage.load(modelURL, metadataURL);
+                maxPredictions = model.getTotalClasses();
+
+                // 檢查類別名稱是否正確
+                const classes = model.getClassLabels();
+                const required = ['Rock', 'Paper', 'Scissors'];
+                const missing = required.filter(c => !classes.includes(c));
+                
+                if (missing.length > 0) {
+                    Swal.fire({
+                        icon: 'warning',
+                        title: '類別名稱警告',
+                        text: `您的模型缺少以下必要類別：${missing.join(', ')}。程式可能無法正常判斷勝負。`,
+                    });
+                }
+
+                await setupWebcam();
+                
+                // UI 切換
+                document.getElementById("start-btn").classList.add("hidden");
+                document.getElementById("game-stage").classList.remove("hidden");
+                document.getElementById("game-controls").classList.remove("hidden");
+                document.getElementById("game-stage").classList.add("flex");
+                document.getElementById("result-message").classList.remove("hidden");
+
+                isModelLoaded = true;
+                window.requestAnimationFrame(loop);
+
+            } catch (error) {
+                console.error(error);
+                Swal.fire('錯誤', '無法啟動相機或載入模型', 'error');
+                startBtn.disabled = false;
+                startBtn.innerHTML = "重試";
+            }
+        }
+
+        async function setupWebcam() {
+            const flip = facingMode === "user";
+            const width = 300;
+            const height = 300;
+            
+            webcam = new tmImage.Webcam(width, height, flip);
+            await webcam.setup({ facingMode: facingMode });
+            await webcam.play();
+            
+            const container = document.getElementById("webcam-container");
+            container.innerHTML = "";
+            container.appendChild(webcam.canvas);
+
+            // 如果是後鏡頭，移除 CSS 鏡像效果
+            if (facingMode === "environment") {
+                container.classList.add("no-flip");
+            } else {
+                container.classList.remove("no-flip");
+            }
+            
+            // 重新加入倒數計時層
+            const overlay = document.createElement('div');
+            overlay.className = "absolute inset-0 flex items-center justify-center z-10 pointer-events-none";
+            overlay.innerHTML = '<span id="countdown-overlay" class="text-6xl font-black text-white drop-shadow-[0_5px_5px_rgba(0,0,0,0.8)] hidden">3</span>';
+            container.appendChild(overlay);
+            
+            // 重新加入狀態層
+            const statusDiv = document.createElement('div');
+            statusDiv.className = "absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-center py-1 z-20";
+            statusDiv.innerHTML = '<span id="player-status" class="text-xs text-white font-mono">準備中</span>';
+            container.appendChild(statusDiv);
+        }
+
+        async function loop() {
+            if (webcam && isModelLoaded) {
+                webcam.update();
+                if (!isBattling) {
+                    // 平常只需輕量預測，更新狀態標籤即可
+                    await predictLoop(); 
+                }
+                window.requestAnimationFrame(loop);
+            }
+        }
+
+        async function predictLoop() {
+            const prediction = await model.predict(webcam.canvas);
+            let highestProb = 0;
+            let bestClass = "None";
+
+            for (let i = 0; i < maxPredictions; i++) {
+                if (prediction[i].probability > highestProb) {
+                    highestProb = prediction[i].probability;
+                    bestClass = prediction[i].className;
+                }
+            }
+            
+            // 更新下方小字提示目前偵測到的東西
+            const label = TRANSLATION[bestClass] || bestClass;
+            const probText = Math.round(highestProb * 100) + "%";
+            document.getElementById("player-status").innerText = `${label} (${probText})`;
+        }
+
+        // --- 遊戲邏輯核心 ---
+
+        async function playRound() {
+            if (isBattling) return;
+            isBattling = true;
+            
+            const btn = document.getElementById("battle-btn");
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.classList.add("opacity-50");
+
+            // 電腦開始洗牌動畫
+            const computerDisplay = document.getElementById("computer-display");
+            computerDisplay.classList.add("animate-spin"); // 簡單的旋轉效果
+
+            // 倒數計時 3, 2, 1
+            const countdownEl = document.getElementById("countdown-overlay");
+            countdownEl.classList.remove("hidden");
+            
+            for (let i = 3; i > 0; i--) {
+                countdownEl.innerText = i;
+                await new Promise(r => setTimeout(r, 600)); // 0.6秒一跳，節奏快一點
+            }
+
+            // 判決時刻！
+            countdownEl.innerText = "GO!";
+            await new Promise(r => setTimeout(r, 200)); // 給一點反應時間
+            
+            // 1. 抓取玩家當下的影像進行預測
+            const prediction = await model.predict(webcam.canvas);
+            const playerMove = getBestPrediction(prediction);
+
+            // 2. 電腦隨機出拳
+            const moves = [MOVES.ROCK, MOVES.PAPER, MOVES.SCISSORS];
+            const computerMove = moves[Math.floor(Math.random() * moves.length)];
+
+            // 3. 停止動畫並顯示結果
+            computerDisplay.classList.remove("animate-spin");
+            countdownEl.classList.add("hidden");
+
+            resolveRound(playerMove, computerMove);
+
+            // 恢復按鈕
+            isBattling = false;
+            btn.disabled = false;
+            btn.classList.remove("opacity-50");
+        }
+
+        function getBestPrediction(prediction) {
+            let maxProb = 0;
+            let bestClass = MOVES.NONE;
+            for (let i = 0; i < maxPredictions; i++) {
+                if (prediction[i].probability > maxProb) {
+                    maxProb = prediction[i].probability;
+                    bestClass = prediction[i].className;
+                }
+            }
+            // 簡單過濾：如果信心度太低，當作沒出拳
+            if (maxProb < 0.7) return MOVES.NONE;
+            return bestClass;
+        }
+
+        function resolveRound(pMove, cMove) {
+            const resultDiv = document.getElementById("result-message");
+            const pIcon = document.getElementById("player-move-icon");
+            const cDisplay = document.getElementById("computer-display");
+            const cText = document.getElementById("computer-move-text");
+
+            // 顯示出拳
+            pIcon.innerText = ICONS[pMove] || '❓';
+            cDisplay.innerText = ICONS[cMove];
+            cText.innerText = TRANSLATION[cMove];
+
+            if (pMove === MOVES.NONE) {
+                resultDiv.innerText = "⚠️ 偵測失敗，請對準鏡頭！";
+                resultDiv.className = "h-12 flex items-center justify-center mb-4 text-xl font-bold text-gray-400";
+                return;
+            }
+
+            // 判斷勝負
+            let result = ""; // "win", "lose", "draw"
+            
+            if (pMove === cMove) {
+                result = "draw";
+            } else if (
+                (pMove === MOVES.ROCK && cMove === MOVES.SCISSORS) ||
+                (pMove === MOVES.SCISSORS && cMove === MOVES.PAPER) ||
+                (pMove === MOVES.PAPER && cMove === MOVES.ROCK)
+            ) {
+                result = "win";
+            } else {
+                result = "lose";
+            }
+
+            // 更新分數與UI
+            if (result === "win") {
+                scorePlayer++;
+                resultDiv.innerText = "🎉 你贏了！";
+                resultDiv.className = "h-12 flex items-center justify-center mb-4 text-xl font-bold text-green-400 animate-bounce-custom";
+                Swal.fire({
+                    position: 'center',
+                    icon: 'success',
+                    title: '勝利！',
+                    showConfirmButton: false,
+                    timer: 1000,
+                    backdrop: `rgba(0,0,123,0.4)`
+                });
+            } else if (result === "lose") {
+                scoreComputer++;
+                resultDiv.innerText = "💀 你輸了...";
+                resultDiv.className = "h-12 flex items-center justify-center mb-4 text-xl font-bold text-red-500";
+            } else {
+                resultDiv.innerText = "🤝 平手！";
+                resultDiv.className = "h-12 flex items-center justify-center mb-4 text-xl font-bold text-white";
+            }
+
+            document.getElementById("score-player").innerText = scorePlayer;
+            document.getElementById("score-computer").innerText = scoreComputer;
+        }
+
+        async function flipCamera() {
+            if (!webcam) return;
+            await webcam.stop();
+            facingMode = facingMode === "user" ? "environment" : "user";
+            await setupWebcam();
+        }
+    </script>
+</body>
+</html>
